@@ -20,7 +20,7 @@ if 'step' not in st.session_state:
 # --- CSS 美化 ---
 st.markdown("""
 <style>
-    .stApp { background-color: #f5f5f5; }
+    .stApp { background-color: #4f4c4c; }
     .title-text {
         color: #333;
         text-align: center;
