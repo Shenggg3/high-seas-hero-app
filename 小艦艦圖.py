@@ -1,191 +1,305 @@
 import streamlit as st
 import google.generativeai as genai
-from PIL import Image
 import urllib.parse
 import random
+from PIL import Image
+import datetime
 
-# --- 設定頁面配置 ---
+# ==========================================
+# 1. 頁面配置與 CSS
+# ==========================================
 st.set_page_config(
-    page_title="AI 繪圖萬能變身器",
-    page_icon="🎨",
-    layout="centered"
+    page_title="全球遊戲廣告素材指揮官",
+    page_icon="🌍",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# --- 初始化 Session State (這是記住你編輯內容的關鍵) ---
-if 'analyzed_content' not in st.session_state:
-    st.session_state.analyzed_content = ""
-if 'step' not in st.session_state:
-    st.session_state.step = 1  # 1: 上傳, 2: 編輯, 3: 完成
-
-# --- CSS 美化 ---
 st.markdown("""
 <style>
-    .stApp { background-color: #4f4c4c; }
-    .title-text {
-        color: #333;
-        text-align: center;
-        font-weight: bold;
+    /* 全局深色主題 */
+    .stApp { background-color: #0F172A; color: #E2E8F0; }
+    
+    /* 標題特效 */
+    .title-text { 
+        color: #A855F7; 
+        text-align: center; 
+        font-weight: 800; 
+        letter-spacing: 2px; 
+        font-size: 2.5em; 
+        text-shadow: 0 0 15px rgba(168, 85, 247, 0.4); 
     }
-    .step-box {
-        background-color: white;
-        padding: 20px;
-        border-radius: 10px;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-        margin-bottom: 20px;
+    .subtitle { text-align: center; color: #94A3B8; margin-bottom: 20px; }
+
+    /* 場景卡片 */
+    .scene-card { 
+        background-color: #1E293B; 
+        border: 1px solid #334155; 
+        border-radius: 12px; 
+        padding: 20px; 
+        margin-bottom: 25px;
+        border-left: 6px solid #A855F7; 
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+    }
+    
+    /* 聲音標籤 */
+    .audio-vo { color: #FACC15; font-weight: bold; } 
+    .audio-dialogue { color: #C084FC; font-weight: bold; }
+    .audio-sfx { color: #F87171; font-weight: bold; font-size: 0.9em; }
+    
+    /* 影片指令區 */
+    .video-prompt-box {
+        background-color: #020617;
+        border: 1px dashed #2DD4BF;
+        padding: 12px;
+        border-radius: 6px;
+        font-family: 'Courier New', monospace;
+        color: #2DD4BF;
+        font-size: 0.85em;
+        margin-top: 10px;
+    }
+    
+    /* 自訂指令區塊 (新功能) */
+    .custom-note-box {
+        border: 2px solid #A855F7;
+        border-radius: 8px;
+        padding: 5px;
+        margin-top: 10px;
+        background-color: #1e1b4b;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 主標題 ---
-st.markdown("<h1 class='title-text'>🎨 AI 照片萬能變身器</h1>", unsafe_allow_html=True)
-
-# --- 側邊欄：設定 ---
-st.sidebar.title("⚙️ 設定")
-api_key = st.sidebar.text_input("輸入 Gemini API Key", type="password")
-st.sidebar.markdown("[取得 Gemini API Key](https://aistudio.google.com/app/apikey)")
-
-# 自動選取模型邏輯
-selected_model_name = None
-if api_key:
-    try:
-        genai.configure(api_key=api_key)
-        model_list = []
-        with st.sidebar:
-            with st.spinner("連線中..."):
-                for m in genai.list_models():
-                    if 'generateContent' in m.supported_generation_methods:
-                        model_list.append(m.name)
-        
-        if model_list:
-            # 優先找 flash
-            idx = 0
-            for i, name in enumerate(model_list):
-                if "flash" in name and "1.5" in name:
-                    idx = i
-                    break
-            st.sidebar.success("✅ 連線成功")
-            selected_model_name = st.sidebar.selectbox("使用模型", model_list, index=idx)
-    except Exception as e:
-        st.sidebar.error(f"連線失敗: {e}")
+# Session State
+if 'fetched_models' not in st.session_state: st.session_state.fetched_models = []
+if 'is_connected' not in st.session_state: st.session_state.is_connected = False
 
 # ==========================================
-#  Step 1: 上傳與初步分析
+# 2. 側邊欄：設定
 # ==========================================
-st.markdown("### 步驟 1: 上傳照片")
-uploaded_file = st.file_uploader("上傳你要轉換的人物照片", type=["jpg", "jpeg", "png"])
-
-if uploaded_file is not None:
-    image = Image.open(uploaded_file)
-    st.image(image, caption='原始照片', use_container_width=True)
+with st.sidebar:
+    st.title("⚙️ 系統設定")
+    api_key = st.text_input("🔑 Google API Key", type="password")
     
-    # 只有當還沒分析過，或想重新分析時顯示按鈕
-    if st.button("🔍 分析照片特徵 (產生中文描述)"):
-        if not api_key or not selected_model_name:
-            st.error("請先設定 API Key")
+    if st.button("🔗 連線系統"):
+        if not api_key:
+            st.error("請輸入 API Key")
         else:
             try:
-                model = genai.GenerativeModel(selected_model_name)
-                with st.spinner("Gemini 正在用繁體中文描述這張照片..."):
-                    # 指令：要求用繁體中文詳細描述
-                    analyze_prompt = """
-                    請擔任專業的視覺描述師。
-                    請用「繁體中文」詳細描述這張圖片的人物外觀、動作、表情、穿著與背景。
-                    重點放在視覺細節，不需要過多的文學修飾。
-                    直接輸出描述段落即可。
-                    """
-                    response = model.generate_content([analyze_prompt, image])
-                    st.session_state.analyzed_content = response.text
-                    st.session_state.step = 2
-                    st.rerun() # 重新整理頁面以進入下一步
+                genai.configure(api_key=api_key)
+                models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                if models:
+                    st.session_state.fetched_models = models
+                    st.session_state.is_connected = True
+                    st.success(f"✅ 連線成功")
+                else:
+                    st.error("無可用模型")
             except Exception as e:
-                st.error(f"分析錯誤: {e}")
-
-# ==========================================
-#  Step 2: 客製化編輯與風格選擇
-# ==========================================
-if st.session_state.step >= 2 and uploaded_file is not None:
-    st.markdown("---")
-    st.markdown("### 步驟 2: 編輯提示詞與風格")
+                st.error(f"錯誤: {e}")
     
-    with st.container():
-        st.info("👇 下面是 AI 分析出的結果，你可以自由修改！例如把「穿西裝」改成「穿太空衣」。")
-        
-        # 讓使用者編輯中文提示詞
-        user_edited_prompt = st.text_area(
-            "編輯畫面描述 (繁體中文):", 
-            value=st.session_state.analyzed_content,
-            height=150
-        )
-        
-        # 風格選擇器
-        style_options = {
-            "小艦艦超勇 (Q版海戰)": "Supercell art style, 3D chibi character, cute, big head, mobile game asset, isometric view, vibrant colors, ocean background",
-            "皮克斯動畫風 (Pixar)": "Pixar style, 3D animation render, disney style, cute, high detail, cinematic lighting",
-            "日系動漫風 (Anime)": "Japanese anime style, Studio Ghibli style, 2D cell shading, detailed, vibrant",
-            "賽博龐克 (Cyberpunk)": "Cyberpunk 2077 style, neon lights, futuristic city background, high tech armor, realistic 8k",
-            "寫實攝影 (Realistic)": "Cinematic photography, 8k, photorealistic, shot on 35mm lens, highly detailed texture",
-            "不指定 (僅依描述生成)": "High quality, masterpiece"
-        }
-        
-        selected_style_name = st.selectbox("選擇畫風模板:", list(style_options.keys()))
-        
-        # 如果使用者想自訂風格指令
-        custom_style = st.text_input("或者輸入自訂風格關鍵字 (英文佳，例如: Watercolor style):")
+    st.divider()
+    
+    selected_model = None
+    if st.session_state.is_connected:
+        default_idx = 0
+        for i, m in enumerate(st.session_state.fetched_models):
+            if "flash" in m and "1.5" in m: default_idx = i; break
+        selected_model = st.selectbox("🧠 選用模型", st.session_state.fetched_models, index=default_idx)
 
-        # 生成按鈕
-        if st.button("✨ 確認並生成圖片"):
-            if not api_key:
-                st.error("API Key 遺失，請重新輸入")
-            else:
-                try:
-                    # 準備最終的風格字串
-                    final_style_prompt = custom_style if custom_style else style_options[selected_style_name]
-                    
-                    model = genai.GenerativeModel(selected_model_name)
-                    
-                    with st.spinner("正在翻譯並將你的創意轉化為圖像咒語..."):
-                        # 這是關鍵步驟：把使用者的「中文描述」+「風格」轉譯成「英文繪圖 Prompt」
-                        # 因為繪圖模型通常對英文的理解力遠高於中文
-                        translation_prompt = f"""
-                        You are an expert AI Prompt Engineer for Flux/Midjourney.
-                        
-                        **Input Description (Traditional Chinese):** 
-                        "{user_edited_prompt}"
-                        
-                        **Target Art Style:**
-                        "{final_style_prompt}"
-                        
-                        **Task:**
-                        1. Translate the Chinese description into detailed English.
-                        2. Combine it with the Target Art Style.
-                        3. Ensure the prompt describes the visual content accurately based on the input.
-                        
-                        **Output:** 
-                        Return ONLY the final English prompt string.
-                        """
-                        
-                        response_prompt = model.generate_content(translation_prompt)
-                        english_prompt = response_prompt.text.strip()
-                        
-                    # 呼叫繪圖 API
-                    with st.spinner("正在繪製圖片中... (約需 5-10 秒)"):
-                        encoded_prompt = urllib.parse.quote(english_prompt)
-                        seed = random.randint(0, 99999)
-                        image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&seed={seed}&nologo=true&model=flux"
-                        
-                        st.success("🎉 生成完成！")
-                        st.image(image_url, caption=f"風格: {selected_style_name}", use_container_width=True)
-                        
-                        with st.expander("查看 AI 使用的英文咒語"):
-                            st.code(english_prompt)
-                            
-                except Exception as e:
-                    st.error(f"生成失敗: {e}")
+# ==========================================
+# 3. 主畫面：參數設定
+# ==========================================
+st.markdown("<h1 class='title-text'>🌍 全球遊戲廣告素材指揮官</h1>", unsafe_allow_html=True)
+st.markdown("<p class='subtitle'>導演特別指示 • Veo3/Sora 優化 • 精準受眾鎖定</p>", unsafe_allow_html=True)
 
-# 頁尾重置按鈕
-if st.session_state.step >= 2:
+with st.container():
+    # --- Row 1: 基礎遊戲資訊 ---
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        game_name = st.text_input("🎮 遊戲名稱", placeholder="Ex: 絕區零")
+    with c2:
+        platform = st.selectbox("🕹️ 遊戲平台", ["手機遊戲 (Mobile)", "PC/Steam", "主機 (Console)", "網頁遊戲"])
+
     st.markdown("---")
-    if st.button("🔄 重新開始 (清除所有設定)"):
-        st.session_state.analyzed_content = ""
-        st.session_state.step = 1
-        st.rerun()
+
+    # --- Row 2: 地區與風格 ---
+    c3, c4, c5 = st.columns(3)
+    with c3:
+        target_region = st.selectbox("🌐 投放地區 (語言)", [
+            "台灣 (Taiwan) - 繁體中文", "日本 (Japan) - 日文", "美國 (USA) - 英文", 
+            "韓國 (Korea) - 韓文", "中國大陸 (China) - 簡體中文", "東南亞 (SEA) - 英文/當地語"
+        ])
+    with c4:
+        ad_tone = st.selectbox("🎭 影片調性/風格", [
+            "🤪 搞笑/諧音梗 (Funny)", "🔥 熱血/中二感 (Epic)", "😱 懸疑/驚悚 (Thriller)", 
+            "😭 感人/情感共鳴 (Emotional)", "😎 專業/硬核介紹 (Professional)", "🤑 誇張/暴發戶感 (Aggressive)"
+        ]) 
+    with c5:
+        ad_format = st.selectbox("📢 廣告腳本形式", [
+            "戰力飆升 (Lv1 vs Lv100)", "失敗挑戰 (Fail Run)", "CG 動畫大片 (Cinematic)", 
+            "實機試玩 (Gameplay)", "福利放送 (Gacha/Freebies)", "真人情境劇 (Live Action Skit)"
+        ])
+
+    # --- Row 3: 精準受眾儀表板 ---
+    st.markdown("<br>", unsafe_allow_html=True)
+    with st.expander("🎯 受眾精準鎖定 (Targeting Details)", expanded=False):
+        d1, d2, d3, d4 = st.columns(4)
+        with d1: ta_gender = st.selectbox("👤 性別傾向", ["不限", "男性為主", "女性為主"])
+        with d2: ta_age = st.slider("🎂 年齡層", 12, 60, (18, 35))
+        with d3: ta_time = st.selectbox("⏰ 投放時段", ["通勤(早)", "午休(中)", "下班(晚)", "深夜", "不限"])
+        with d4: ta_holiday = st.text_input("🎉 節慶/節氣", placeholder="Ex: 春節") or "平日"
+
+    # --- Row 4: 其他 ---
+    c6, c7 = st.columns([1, 1])
+    with c6:
+        duration = st.select_slider("⏱️ 廣告時長", options=[15, 30, 45, 60], value=30)
+    with c7:
+        uploaded_file = st.file_uploader("📸 參考圖 (選填)", type=["jpg", "png"])
+
+    # --- [NEW] Row 5: 導演特別指示 ---
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("### 📝 導演特別指示 (Custom Director's Note)")
+    st.caption("在這裡輸入您的具體劇情要求、指定台詞或創意細節。AI 將會 **優先執行** 這裡的指令。")
+    
+    # 使用 container 來增加醒目度
+    with st.container():
+        st.markdown('<div class="custom-note-box">', unsafe_allow_html=True)
+        custom_instructions = st.text_area(
+            label="請輸入您的客製化需求 (選填)", 
+            height=100,
+            placeholder="例如：我要一個劇情是主角在路上撿到一把劍，然後突然變成魔王。旁白要很激動地說『這也太爽了吧！』...",
+            label_visibility="collapsed"
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+
+# ==========================================
+# 4. 生成核心
+# ==========================================
+if st.button("🚀 執行導演指令 (生成腳本)"):
+    if not st.session_state.is_connected or not game_name:
+        st.warning("請先連線並輸入遊戲名稱")
+    else:
+        model = genai.GenerativeModel(selected_model)
+        
+        # 視覺分析
+        visual_info = ""
+        if uploaded_file:
+            img = Image.open(uploaded_file)
+            with st.spinner("正在分析參考圖..."):
+                res = model.generate_content(["Describe the visual style.", img])
+                visual_info = f"Visual Ref: {res.text}"
+
+        # 構建 Prompt (加入 Custom Note)
+        prompt = f"""
+        You are a World-Class Game Ad Director.
+        
+        **Configuration:**
+        - Game: {game_name} ({platform})
+        - Region: {target_region}
+        - Tone: {ad_tone}
+        - Format: {ad_format}
+        - Target: {ta_gender}, Age {ta_age[0]}-{ta_age[1]}
+        - Context: Time: {ta_time}, Holiday: {ta_holiday}
+        - Duration: {duration}s
+        - {visual_info}
+        
+        **CRITICAL - DIRECTOR'S CUSTOM NOTE:**
+        "{custom_instructions}"
+        (Prioritize this note above all other settings if there is a conflict. Implement these specific plot points or requests exactly.)
+        
+        **Task:**
+        1. **Strategy:** Analyze the approach.
+        2. **Script (The Trinity Audio System):**
+           * **Voiceover (Narrator):** Native Language.
+           * **Dialogue (Characters):** Native Language. Format: "Character: Line".
+           * **SFX:** Sound effects.
+           * **Visuals:** Traditional Chinese descriptions.
+        3. **Video Prompt (Next-Gen):** English prompts for Veo3/Sora/Kling.
+        
+        **Output Format (Separator '|||'):**
+        
+        [STRATEGY]
+        策略與創意: [Traditional Chinese analysis]
+        |||
+        Scene 1
+        Time: [Start-End]s
+        Visual: [Traditional Chinese visual desc]
+        Voiceover: [Native Language Narrator (or "None")]
+        Dialogue: [Native Language Dialogue (or "None")]
+        SFX: [Sound effect desc]
+        Text: [Native Language Overlay]
+        Video Prompt: [English detailed prompt]
+        |||
+        (Repeat)
+        """
+
+        with st.spinner("🧠 正在整合導演指示與AI創意..."):
+            try:
+                response = model.generate_content(prompt)
+                full_text = response.text
+                
+                # 解析
+                if "[STRATEGY]" in full_text:
+                    parts = full_text.split("|||")
+                    strategy = parts[0].replace("[STRATEGY]", "").strip()
+                    scenes = parts[1:]
+                else:
+                    strategy = "無策略分析"
+                    scenes = full_text.split("|||")
+                
+                # 顯示策略
+                st.markdown(f"""
+                <div class="strategy-box" style="background-color:#1e293b; padding:20px; border-radius:10px; border-top:4px solid #FACC15; margin-bottom:25px;">
+                    <h3 style="color:#FACC15; margin:0;">🧠 綜合策略分析</h3>
+                    <pre style="white-space: pre-wrap; color: #cbd5e1; font-family: sans-serif;">{strategy}</pre>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.subheader(f"🎬 {game_name} - 客製化腳本")
+                
+                for i, scene in enumerate(scenes):
+                    if len(scene.strip()) < 10: continue
+                    
+                    lines = scene.strip().split('\n')
+                    data = {"Time": "N/A", "Visual": "無", "Voiceover": "無", "Dialogue": "無", "SFX": "無", "Text": "無", "Video Prompt": ""}
+                    for line in lines:
+                        for k in data.keys():
+                            if f"{k}:" in line: data[k] = line.split(":", 1)[1].strip()
+                    
+                    with st.container():
+                        c_text, c_img = st.columns([3, 2])
+                        with c_text:
+                            # 聲音分軌
+                            audio_html = ""
+                            if data['Voiceover'] not in ["None", "無"]:
+                                audio_html += f'<span class="audio-vo">🗣️ 旁白:</span> {data["Voiceover"]}<br>'
+                            if data['Dialogue'] not in ["None", "無"]:
+                                audio_html += f'<span class="audio-dialogue">💬 對話:</span> {data["Dialogue"]}<br>'
+                            
+                            st.markdown(f"""
+                            <div class="scene-card">
+                                <span class="time-badge">Scene {i+1} | {data['Time']}</span>
+                                <br><br>
+                                <b>🎥 畫面:</b> {data['Visual']}<br>
+                                <b>📝 壓字:</b> {data['Text']}<br>
+                                <hr style="border-color: #334155;">
+                                {audio_html}
+                                <span class="audio-sfx">🔊 音效:</span> {data['SFX']}
+                            </div>
+                            """, unsafe_allow_html=True)
+                            
+                            st.markdown("**👇 Veo3 / Sora / Kling 指令:**")
+                            st.markdown(f'<div class="video-prompt-box">{data["Video Prompt"]}</div>', unsafe_allow_html=True)
+                        
+                        with c_img:
+                            if data['Video Prompt']:
+                                w, h, ratio = (576, 1024, "9:16") if "手機" in platform or "Mobile" in platform else (1024, 576, "16:9")
+                                clean_p = urllib.parse.quote(f"{data['Video Prompt']}, {game_name} style, cinematic lighting, 8k")
+                                seed = random.randint(0, 9999)
+                                url = f"https://image.pollinations.ai/prompt/{clean_p}?width={w}&height={h}&seed={seed}&nologo=true&model=flux"
+                                st.image(url, caption=f"視覺示意 ({ratio})", use_container_width=True)
+
+                st.success("🎉 客製化腳本製作完成！")
+
+            except Exception as e:
+                st.error(f"生成錯誤: {e}")
